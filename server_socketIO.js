@@ -1,12 +1,10 @@
 
 const TYPE_MESSAGE = 'message';
 const TYPE_SERVER = 'server';
-const TYPE_ERROR = 'error';
+const TYPE_ERROR = 'message_error';
 const TYPE_COMMAND = 'command';
 const COMMAND_UPDATE_USR_LIST = 'update_user_list';
-const COMMAND_LISTUSER = 'list_users';
-const COMMAND_DISPLAY_MSG = 'display';
-const SERVER_SENDER = -1;
+const SERVER_SENDER = 'server';
 
 
 var http = require('http');
@@ -33,172 +31,108 @@ function valueExists(arrayOfData,check){
 }
 
 
-var connections = [];
-var canvasCommands = [];
-var clientData = [];
 var historique = [];
 var channels = [];
-var currentUser = null;
-
-function setCurrentUser(connection)
-{
-    console.log("setCurrentUser");
-    var currentUserId = connections.indexOf(connection);
-    var currentUserData = (currentUserId>=0 && (currentUserId< clientData.length)) ?clientData[currentUserId]:null;
-
-    currentUser = currentUserId>=0?{id:currentUserId,data:currentUserData}:null;
-}
-
-
-
-
-function sendMessageInChannel(connections,targetChannel,message,sender,type,cmd)
-{
-    console.log("message " + message + " Channel " + targetChannel +" type "+type + " cmd " + cmd + " sender " + sender);
-console.log(channels);
-    channels[targetChannel].forEach(function(connectionId) {
-        
-            sendMessage(connections[connectionId.id],message,sender,type,cmd);
-
-        if(!cmd)
-            putMessageInHistory(historique,targetChannel,constructMessage(message,sender,type,cmd));
-
-    });
-
-    
-
-}
 
 
 /***** MESSAGE AND COMMAND HELPERS **************/
-function userSendMessageToUser(targetUserId,message)
-{
-    var targetConnection = connections[targetUserId];
-
-    if(targetConnection)
-        sendMessage(targetConnection,message,currentUser.id);
+function sendToAllInChannel(channel,data,type,curSender){
+    console.log("sendToAllInChannel " + data);
+    var sender = curSender?curSender:SERVER_SENDER;
+    var message = constructMessage(data,sender);
+    console.log("debug");
+    console.log(type);
+    console.log(JSON.parse(message));
+    io.sockets.in(channel).emit(type,message);
 }
 
-function userSendMessageInChannel(connection,targetChannel,message)
-{
-    console.log("userSendMessageInChannel");
-    var connectionId = connections.indexOf(connection);
-    sendMessageInChannel(connections,targetChannel,message,connectionId);
+function sendToSocketChannel(socket,data,type,curSender){
+    console.log("sendToSocketChannel " + data + " " + type);
+    var sender = curSender?curSender:SERVER_SENDER;
+    var message = constructMessage(data,sender);
+    socket.broadcast.emit(type,message);
 }
 
-function serverSendMessageInChannel(targetChannel,message,type)
-{
-    sendMessageInChannel(connections,targetChannel,message,SERVER_SENDER,type);
+function sendToUser(socket,data,type,curSender){
+    console.log("sendToUser " + data);
+    var sender = curSender?curSender:SERVER_SENDER;
+    var message = constructMessage(data,sender);
+    socket.emit(type,message);
 }
 
-function serverSendMessageToUser(connection,message,type)
-{
-    sendMessage(connection,message,SERVER_SENDER,type);
-}
 
-function serverSendCommandToUser(connection,message,cmd)
-{
-    sendMessage(connection,message,SERVER_SENDER,TYPE_COMMAND,cmd);
-}
-
-function sendCommandInChannel(targetChannel,data,cmd)
-{
-    sendMessageInChannel(connections,targetChannel,data,SERVER_SENDER,TYPE_COMMAND,cmd);
-}
 
 
 /***** ADD / REMOVE USER *****/
 
-function removeUser()
+function disconnectUser(socket)
 {
-
-    if (currentUser.id !== -1) {
-        // remove the connection from the pool
-        if(currentUser.data)
-        {
-            removeUserFromChannel(currentUser.data.channel,currentUser.id);
-            clientData.splice(currentUser.id, 1);
-        }
-        connections.splice(currentUser.id, 1);
+    if(socket.userData && socket.userData.channel)
+    {
+        var userChannel = socket.userData.channel;
+        removeUserFromChannel(socket,userChannel);
+        sendToAllInChannel(userChannel,"disconnected",TYPE_MESSAGE);
     }
+    socket.disconnect() ;
 }
 
-function setCurrentUserData(login,channel){
-    console.log("add user");
-    if(!currentUser)
-        throw "add user called without user created. Check createuser";
 
-    clientData[currentUser.id] = {login:login,channel:channel};
-    console.log(currentUser);
-    if(currentUser.data === null)
-        currentUser.data = clientData[currentUser.id];
-    /*connection["login"] = login;
-    connection["channel"] = channel;*/
-}
-
-function removeUserFromChannel(clientChannel,clientId)
+function removeUserFromChannel(socket,channel)
 {
-        var login = currentUser.data?currentUser.data.login :"unknown user";
-        var message = login + " deconnecté";
-        console.log("remove user " + clientId + " chan " + clientChannel);
-        console.log(channels[clientChannel]);
-        if(clientId >= 0)
-            channels[clientChannel].splice(clientId,1);
-
-        serverSendMessageInChannel(clientChannel,message,TYPE_MESSAGE);
-        sendCommandInChannel(clientChannel,getConnectedUsers(clientChannel),COMMAND_UPDATE_USR_LIST);
+        socket.leave(channel);
+        var message = socket.userData.login + " deconnecté";
+        sendToAllInChannel(channel,message,TYPE_MESSAGE,SERVER_SENDER);
+        getConnectedUsers(channel)
 }
-
 
 function getConnectedUsers(channel)
 {
-    console.log("get connected " + channel);
-    console.log(channels[channel]);
-    var userList = [];
+    var logins = [];
+    var clients = null;
+     console.log("getConnectedUsers1");
 
-    if(channel)
-        channels[channel].forEach(function(connectionId) {
-            userList.push(clientData[connectionId.id]);
-        });
-    else
-        userList = channels.reduceRight((currentUserList,currentChannel) => { 
-            channels[currentChannel].reduceRight((currentUserList,currentUserId)=>{
-                currentUserList.push(clientData[connectionId.id]);
-            },[])  
-        },[]);
+    clients = io.sockets.in(channel).clients(function(error, clients){
+      if (error) console.log(error);//throw error;
+      //console.log(clients); // => [PZDoMHjiu8PYfRiKAAAF, Anw2LatarvGVVXEIAAAD]
 
-    return userList;
+      for(var i=0; i< clients.length; i++)
+      {
+        logins.push({login:io.sockets.sockets[clients[i]].login,id:clients[i]});
+      
+    }
+      
+       sendToAllInChannel(channel,logins,COMMAND_UPDATE_USR_LIST,SERVER_SENDER);
+    });
 }
 
 
-function switchChannel(connections, connection, newChannel)
+function switchChannel(socket,newChannel)
 {
-    var currentChannel = currentUser.data.channel;
     console.log("switching channel");
     //create channel if not exists
     if(!channels[newChannel] || channels[newChannel] === 'undefined')
         channels[newChannel] = [];
 
 
-    if(currentUser.data && 'channel' in currentUser.data && currentUser.data.channel != newChannel)
-    {
-        removeUserFromChannel(currentUser.data.channel,currentUser.id);
+    if(socket.userData && 'channel' in socket.userData && socket.userData.channel != newChannel)
+    { 
+        removeUserFromChannel(socket,socket.userData.channel);
     }
 
 
-    currentUser.data.channel = newChannel;
-    console.log("push");
-    channels[newChannel].push({id:currentUser.id});
-console.log("push done");
+    socket.join(newChannel);
+    socket.userData.channel = newChannel;
+    channels.push(newChannel);
+
     if(!historique[newChannel])
     {console.log("new channel " + newChannel);
         historique[newChannel] = [];
     }
-
-    sendCommandInChannel(currentChannel,getConnectedUsers(newChannel),COMMAND_UPDATE_USR_LIST);
+    console.log("after");
+    getConnectedUsers(newChannel)
 }
 
-function sendHistorique(connection, historique, channel)
+function sendHistorique(socket, historique, channel)
 {
 
     console.log("historique " + channel);
@@ -206,7 +140,7 @@ function sendHistorique(connection, historique, channel)
     historique[channel].forEach(function(message) {
 
         console.log(message);
-        sendDirectMessage(connection,message);
+        sendToUser(socket,message,TYPE_MESSAGE);
     });
 }
 
@@ -221,39 +155,14 @@ function putMessageInHistory(historyDB,channel,message)
 }
 
 
-function constructMessage(data,sender,type,command)
+function constructMessage(cdata,sender)
 {
-    var messageType = TYPE_MESSAGE;
-    var commandMsg = false;
-    var loginSender = 'unknown';
+    console.log("cdata");
+    console.log(cdata);
 
-    if(type && type != 'undefined')
-        messageType = type;
-
-    if(command && command != 'undefined')
-        commandMsg = command;
-
-    if(clientData[sender])
-        loginSender = clientData[sender].login;
-    else if(sender === SERVER_SENDER)
-        loginSender = 'server';
-
-    console.log("sender " + sender);
-    return JSON.stringify({type:messageType,command:commandMsg,login:loginSender,data:data});
+    return JSON.stringify({login:sender,data:cdata});
 }
 
-function sendMessage(connection,data,sender,type,command)
-{
-    console.log("send message1 ");
-    sendDirectMessage(connection,constructMessage(data,sender,type,command));
-}
-
-function sendDirectMessage(connection,message)
-{
-    console.log("send message ");
-    console.log(message);
-    connection.sendUTF(message);
-}
 
 // Chargement du fichier index.html affiché au client
 var server = http.createServer(function(req, res) {
@@ -274,94 +183,52 @@ io.sockets.on('connection', function(socket){
   socket.auth = false;
   socket.emit('requestInit');
   console.log("requestInit");
+
   socket.on('init', function(data){
     //check the auth data sent by the client
-    var jsonData = JSON.parse(data);
+    console.log("init");
+
+    var jsonData = data;
+    console.log("jsonData");
+    console.log(jsonData);
     var login = jsonData.text;
     var room = jsonData.channel;
     socket.login = login;
+    socket.auth = true;
 
     console.log(login);
+    if(!socket.login.length)
+    {
+        sendToUser(socket,"Login is mandatory",TYPE_ERROR);
+        disconnectUser(socket);
+    }
+
     if(!valueExists(socketsList,login))
     {
-        socket.login = login;
-        socket.join(room);
+        socket.userData = {login:login,channel:room};
+        switchChannel(socket,room);
     }
-    else
-        throw "User exists";
+    else{
+        sendToUser(socket,"UserExists",TYPE_ERROR);
+        disconnectUser(socket);
+    }
   });
 
   socket.on('message', function (message) {
         console.log(socket.login + " " + message);
-        io.sockets.in('c1').emit('message', JSON.stringify({data:'what is going on, party people?'}));
+        if(socket.auth && socket.login.length)
+            sendToAllInChannel(socket.userData.channel,message,TYPE_MESSAGE,socket.userData.login);
+        else
+            sendToUser(socket,"Erreur vous n'êtes pas connecté",TYPE_ERROR);
   });
+
+  socket.on('disconnect', function() {
+        console.log(socket.login + " disconnected");
+        disconnectUser(socket);
+    });
+
 });
 
 
-
-/*io.sockets.on('connection', function (socket) {
-   socket.emit('message', 'Vous êtes bien connecté !');
-
-    connections.push(connection);
-    console.log(connection.remoteAddress + " connected - Protocol Version " + connection.webSocketVersion);
-    //console.log(connections);
-    setCurrentUser(socket.);
-
-    console.log('Un client est connecté !');
-    socket.broadcast.emit('message', 'Un autre client vient de se connecter !');
-
-    // Quand le serveur reçoit un signal de type "message" du client    
-    socket.on('message', function (message) {
-        var messageData = message.utf8Data;
-        var clientId = connections.indexOf(connection);
-        var init = false;
-        try{
-            var messageObject = JSON.parse(messageData);
-
-            if(messageObject.type === "init")
-            {
-                init = true;
-                    if(valueExists(clientData,messageObject.text))
-                    {
-                        serverSendMessageToUser(connection,"ERROR LE NOM EXISTE",TYPE_ERROR);
-                        this.close();
-                        return;
-                    }else if (messageObject.text == 'server') 
-                    {
-                        serverSendMessageToUser(connection,"ERROR server est réservé",TYPE_ERROR);
-                        this.close();
-                        return;
-                    }else
-                {
-                    setCurrentUserData(messageObject.text,messageObject.channel);
-                }
-            }
-
-            if(messageObject.type === "init" || messageObject.type === "switchchannel")
-            {
-                switchChannel(connections,connection,messageObject.channel);     
-                console.log("ok");
-                serverSendMessageToUser(connection,"bonjour " + messageObject.text + " " + connection.remoteAddress,TYPE_MESSAGE);
-                sendHistorique(connection,historique,messageObject.channel);
-                console.log("ok");
-            }
-
-
-            if(!init)
-                userSendMessageInChannel(connection,currentUser.data.channel,messageObject.text);
-
-
-            console.log(connection.remoteAddress);
-        }
-        catch (e) {
-            console.log("erreur : " + e );
-        }
-    }); 
-
-    socket.on('close', function() {
-        console.log(connection.remoteAddress + " disconnected");
-        removeUser();
-    });
-});*/
 
 server.listen(8100);
